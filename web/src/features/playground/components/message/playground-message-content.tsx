@@ -155,7 +155,20 @@ export function PlaygroundMessageContent({
               variant='flat'
               className={cn(getMessageContentStyles())}
             >
-              <Response final={isMessageFinal}>{displayContent}</Response>
+              {message.videoUrl ? (
+                <video
+                  className='max-h-[480px] w-full max-w-[640px] rounded-lg bg-black'
+                  controls
+                  playsInline
+                  preload='metadata'
+                  src={message.videoUrl}
+                >
+                  <track kind='captions' />
+                </video>
+              ) : null}
+              {displayContent ? (
+                <Response final={isMessageFinal}>{displayContent}</Response>
+              ) : null}
             </MessageContent>
           )}
           <MessageMetadata alignment={alignment} message={message} />

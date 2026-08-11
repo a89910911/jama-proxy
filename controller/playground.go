@@ -7,7 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,4 +53,54 @@ func Playground(c *gin.Context) {
 	_ = middleware.SetupContextForToken(c, tempToken)
 
 	Relay(c, types.RelayFormatOpenAI)
+}
+
+// PlaygroundVideo submits an async video generation task using session auth
+// (same temp-token pattern as Playground chat).
+func PlaygroundVideo(c *gin.Context) {
+	if err := setupPlaygroundTempToken(c); err != nil {
+		c.JSON(err.StatusCode, gin.H{
+			"error": err.ToOpenAIError(),
+		})
+		return
+	}
+	RelayTask(c)
+}
+
+// PlaygroundVideoFetch polls an async video task using session auth.
+func PlaygroundVideoFetch(c *gin.Context) {
+	if err := setupPlaygroundTempToken(c); err != nil {
+		c.JSON(err.StatusCode, gin.H{
+			"error": err.ToOpenAIError(),
+		})
+		return
+	}
+	RelayTaskFetch(c)
+}
+
+func setupPlaygroundTempToken(c *gin.Context) *types.NewAPIError {
+	useAccessToken := c.GetBool("use_access_token")
+	if useAccessToken {
+		return types.NewError(errors.New("暂不支持使用 access token"), types.ErrorCodeAccessDenied, types.ErrOptionWithSkipRetry())
+	}
+
+	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+
+	userId := c.GetInt("id")
+	userCache, err := model.GetUserCache(userId)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	userCache.WriteContext(c)
+
+	tempToken := &model.Token{
+		UserId: userId,
+		Name:   fmt.Sprintf("playground-%s", relayInfo.UsingGroup),
+		Group:  relayInfo.UsingGroup,
+	}
+	_ = middleware.SetupContextForToken(c, tempToken)
+	return nil
 }

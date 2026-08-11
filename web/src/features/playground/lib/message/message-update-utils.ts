@@ -61,3 +61,22 @@ export function updateLastAssistantMessage(
   updated[updated.length - 1] = updater(last)
   return updated
 }
+
+/**
+ * Update a specific assistant message by key.
+ */
+export function updateAssistantMessageByKey(
+  messages: Message[],
+  key: string,
+  updater: (message: Message) => Message
+): Message[] {
+  const index = messages.findIndex(
+    (message) =>
+      message.key === key && message.from === MESSAGE_ROLES.ASSISTANT
+  )
+  if (index < 0) return messages
+
+  const updated = [...messages]
+  updated[index] = updater(messages[index])
+  return updated
+}

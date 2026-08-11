@@ -35,9 +35,15 @@ export const MESSAGE_STATUS = {
 // API endpoints
 export const API_ENDPOINTS = {
   CHAT_COMPLETIONS: '/pg/chat/completions',
+  VIDEO_GENERATIONS: '/pg/video/generations',
+  VIDEO_FETCH: '/pg/videos',
+  VIDEO_CONTENT: '/v1/videos',
   USER_MODELS: '/api/user/models',
   USER_GROUPS: '/api/user/self/groups',
 } as const
+
+export const VIDEO_POLL_INTERVAL_MS = 3000
+export const VIDEO_POLL_MAX_ATTEMPTS = 120
 
 // Default group — uses 'default' as the safe fallback; auto-group is
 // only selected when the backend confirms it is available for the user.
@@ -80,6 +86,10 @@ export const ERROR_MESSAGES = {
   STREAM_START_ERROR: 'Error establishing connection',
   CONNECTION_CLOSED: 'Connection closed',
   INTERRUPTED: 'Generation was interrupted',
+  VIDEO_GENERATING: 'Generating video...',
+  VIDEO_FAILED: 'Video generation failed',
+  VIDEO_TIMEOUT: 'Video generation timed out',
+  VIDEO_PROMPT_REQUIRED: 'Please enter a prompt for video generation',
 } as const
 
 // Message action button styles

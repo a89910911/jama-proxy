@@ -3,6 +3,7 @@ package relay
 import (
 	"strconv"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/advancedcustom"
@@ -24,12 +25,14 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/mistral"
 	"github.com/QuantumNous/new-api/relay/channel/mokaai"
 	"github.com/QuantumNous/new-api/relay/channel/moonshot"
+	"github.com/QuantumNous/new-api/relay/channel/newapi"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	"github.com/QuantumNous/new-api/relay/channel/palm"
 	"github.com/QuantumNous/new-api/relay/channel/perplexity"
 	"github.com/QuantumNous/new-api/relay/channel/replicate"
 	"github.com/QuantumNous/new-api/relay/channel/siliconflow"
+	"github.com/QuantumNous/new-api/relay/channel/sub2api"
 	"github.com/QuantumNous/new-api/relay/channel/submodel"
 	taskali "github.com/QuantumNous/new-api/relay/channel/task/ali"
 	taskdoubao "github.com/QuantumNous/new-api/relay/channel/task/doubao"
@@ -41,6 +44,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/task/suno"
 	taskvertex "github.com/QuantumNous/new-api/relay/channel/task/vertex"
 	taskVidu "github.com/QuantumNous/new-api/relay/channel/task/vidu"
+	taskholycrab "github.com/QuantumNous/new-api/relay/channel/task/holycrab"
 	"github.com/QuantumNous/new-api/relay/channel/tencent"
 	"github.com/QuantumNous/new-api/relay/channel/vertex"
 	"github.com/QuantumNous/new-api/relay/channel/volcengine"
@@ -66,7 +70,7 @@ func GetAdaptor(apiType int) channel.Adaptor {
 	case constant.APITypePaLM:
 		return &palm.Adaptor{}
 	case constant.APITypeTencent:
-		return &tencent.Adaptor{}
+		return &tencent.DispatchAdaptor{}
 	case constant.APITypeXunfei:
 		return &xunfei.Adaptor{}
 	case constant.APITypeZhipu:
@@ -123,6 +127,10 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &codex.Adaptor{}
 	case constant.APITypeAdvancedCustom:
 		return &advancedcustom.Adaptor{}
+	case constant.APITypeSub2API:
+		return &sub2api.Adaptor{}
+	case constant.APITypeNewAPI:
+		return &newapi.Adaptor{}
 	}
 	return nil
 }
@@ -133,6 +141,32 @@ func GetTaskPlatform(c *gin.Context) constant.TaskPlatform {
 		return constant.TaskPlatform(strconv.Itoa(channelType))
 	}
 	return constant.TaskPlatform(c.GetString("platform"))
+}
+
+// ResolveTaskAdaptor selects the task adaptor and the platform to persist on the
+// task. OpenAI / Custom channels carrying HolyCrab Seedance 2.0 models must use
+// the HolyCrab adaptor; OpenAI / VolcEngine chat channels that carry Doubao
+// Seedance models must use the doubao video adaptor (not Sora). The stored
+// platform is remapped so polling uses the matching FetchTask path.
+func ResolveTaskAdaptor(channelType int, modelName string) (channel.TaskAdaptor, constant.TaskPlatform) {
+	platform := constant.TaskPlatform(strconv.Itoa(channelType))
+	if common.IsHolyCrabSeedanceModel(modelName) {
+		switch channelType {
+		case constant.ChannelTypeHolyCrab,
+			constant.ChannelTypeCustom,
+			constant.ChannelTypeOpenAI:
+			return &taskholycrab.TaskAdaptor{}, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeHolyCrab))
+		}
+	}
+	if common.IsDoubaoSeedanceModel(modelName) {
+		switch channelType {
+		case constant.ChannelTypeOpenAI,
+			constant.ChannelTypeVolcEngine,
+			constant.ChannelTypeDoubaoVideo:
+			return &taskdoubao.TaskAdaptor{}, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeDoubaoVideo))
+		}
+	}
+	return GetTaskAdaptor(platform), platform
 }
 
 func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
@@ -162,6 +196,8 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 			return &taskGemini.TaskAdaptor{}
 		case constant.ChannelTypeMiniMax:
 			return &hailuo.TaskAdaptor{}
+		case constant.ChannelTypeHolyCrab:
+			return &taskholycrab.TaskAdaptor{}
 		}
 	}
 	return nil

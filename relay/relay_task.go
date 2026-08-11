@@ -146,11 +146,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	info.InitChannelMeta(c)
 
 	// 1. 确定 platform → 创建适配器 → 验证请求
-	platform := constant.TaskPlatform(c.GetString("platform"))
-	if platform == "" {
-		platform = GetTaskPlatform(c)
+	// OriginModelName is set by distributor; used so OpenAI/VolcEngine chat
+	// channels carrying Seedance pick the doubao video adaptor instead of Sora.
+	modelName := info.OriginModelName
+	adaptor, platform := ResolveTaskAdaptor(info.ChannelType, modelName)
+	if adaptor == nil {
+		platform = constant.TaskPlatform(c.GetString("platform"))
+		if platform == "" {
+			platform = GetTaskPlatform(c)
+		}
+		adaptor = GetTaskAdaptor(platform)
 	}
-	adaptor := GetTaskAdaptor(platform)
 	if adaptor == nil {
 		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("invalid api platform: %s", platform), "invalid_api_platform", http.StatusBadRequest)
 	}
@@ -160,9 +166,19 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 2. 确定模型名称
-	modelName := info.OriginModelName
+	if modelName == "" {
+		modelName = info.OriginModelName
+	}
 	if modelName == "" {
 		modelName = service.CoverTaskActionToModelName(platform, info.Action)
+	}
+	// Re-resolve if Seedance model was only available after validation.
+	if common.IsSeedanceVideoModel(modelName) {
+		if resolved, resolvedPlatform := ResolveTaskAdaptor(info.ChannelType, modelName); resolved != nil {
+			adaptor = resolved
+			platform = resolvedPlatform
+			adaptor.Init(info)
+		}
 	}
 
 	// 2.5 应用渠道的模型映射（与同步任务对齐）
@@ -385,7 +401,8 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		return
 	}
 
-	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
+	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/") ||
+		strings.HasPrefix(c.Request.URL.Path, "/pg/videos/")
 
 	// Gemini/Vertex 支持实时查询：用户 fetch 时直接从上游拉取最新状态
 	if realtimeResp := tryRealtimeFetch(originTask, isOpenAIVideoAPI); len(realtimeResp) > 0 {

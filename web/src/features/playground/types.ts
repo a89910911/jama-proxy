@@ -49,6 +49,8 @@ export interface Message {
   isContentComplete?: boolean
   status?: MessageStatus
   errorCode?: string | null
+  videoUrl?: string | null
+  videoTaskId?: string | null
 }
 
 // API payload types
@@ -113,6 +115,33 @@ export interface ChatCompletionResponse {
     completion_tokens: number
     total_tokens: number
   }
+}
+
+export interface OpenAIVideoTask {
+  id: string
+  task_id?: string
+  object: string
+  model: string
+  status: 'queued' | 'in_progress' | 'completed' | 'failed' | string
+  progress?: number
+  created_at?: number
+  completed_at?: number
+  error?: {
+    message?: string
+    code?: string
+  }
+  metadata?: {
+    url?: string
+    [key: string]: unknown
+  }
+}
+
+export interface VideoGenerationRequest {
+  model: string
+  prompt: string
+  group?: string
+  duration?: number
+  size?: string
 }
 
 // Configuration types

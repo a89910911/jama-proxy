@@ -24,6 +24,8 @@ import type {
   ChatCompletionResponse,
   ModelOption,
   GroupOption,
+  OpenAIVideoTask,
+  VideoGenerationRequest,
 } from './types'
 
 /**
@@ -34,6 +36,34 @@ export async function sendChatCompletion(
   signal?: AbortSignal
 ): Promise<ChatCompletionResponse> {
   const res = await api.post(API_ENDPOINTS.CHAT_COMPLETIONS, payload, {
+    signal,
+    skipErrorHandler: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+/**
+ * Submit a playground video generation task (session auth).
+ */
+export async function createVideoGeneration(
+  payload: VideoGenerationRequest,
+  signal?: AbortSignal
+): Promise<OpenAIVideoTask> {
+  const res = await api.post(API_ENDPOINTS.VIDEO_GENERATIONS, payload, {
+    signal,
+    skipErrorHandler: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+/**
+ * Fetch playground video task status (session auth).
+ */
+export async function fetchVideoTask(
+  taskId: string,
+  signal?: AbortSignal
+): Promise<OpenAIVideoTask> {
+  const res = await api.get(`${API_ENDPOINTS.VIDEO_FETCH}/${taskId}`, {
     signal,
     skipErrorHandler: true,
   } as Record<string, unknown>)

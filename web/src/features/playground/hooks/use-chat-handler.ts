@@ -20,11 +20,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { sendChatCompletion } from '../api'
-import { ERROR_MESSAGES } from '../constants'
+import { createVideoGeneration, fetchVideoTask, sendChatCompletion } from '../api'
+import { ERROR_MESSAGES, MESSAGE_ROLES, MESSAGE_STATUS } from '../constants'
 import {
   applyStreamingChunk,
   buildChatCompletionPayload,
+  updateAssistantMessageByKey,
   updateAssistantMessageWithError,
   updateLastAssistantMessage,
   parseRequestErrorDetails,
@@ -33,13 +34,22 @@ import {
   hasChatCompletionChoice,
   isAssistantMessageFinal,
   isAssistantMessagePending,
+  isSeedanceModel,
+  getMessageContent,
+  getVideoProgressLabel,
+  isVideoTaskFailed,
+  pollVideoTaskUntilDone,
+  resolveVideoPlaybackUrl,
+  updateCurrentVersionContent,
 } from '../lib'
-import type { Message, PlaygroundConfig, ParameterEnabled } from '../types'
+import type { Message, OpenAIVideoTask, PlaygroundConfig, ParameterEnabled } from '../types'
 import { useStreamRequest } from './use-stream-request'
 
 interface UseChatHandlerOptions {
   config: PlaygroundConfig
   parameterEnabled: ParameterEnabled
+  messages: Message[]
+  isLoadingMessages: boolean
   onMessageUpdate: (updater: (prev: Message[]) => Message[]) => void
 }
 
@@ -69,6 +79,8 @@ function mergePendingStreamChunk(
 export function useChatHandler({
   config,
   parameterEnabled,
+  messages,
+  isLoadingMessages,
   onMessageUpdate,
 }: UseChatHandlerOptions) {
   const { t } = useTranslation()
@@ -76,6 +88,7 @@ export function useChatHandler({
   const [isRequesting, setIsRequesting] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const requestGenerationRef = useRef(0)
+  const didResumeVideoTasksRef = useRef(false)
   const pendingStreamChunksRef = useRef<PendingStreamChunks>({
     generation: 0,
     content: '',
@@ -345,16 +358,289 @@ export function useChatHandler({
     ]
   )
 
+  // Poll a video task and write progress / result onto a specific assistant message.
+  const pollVideoTaskForMessage = useCallback(
+    async (
+      generation: number,
+      messageKey: string,
+      taskId: string,
+      signal: AbortSignal
+    ) => {
+      const finalTask = await pollVideoTaskUntilDone(fetchVideoTask, taskId, {
+        signal,
+        onProgress: (task: OpenAIVideoTask) => {
+          if (requestGenerationRef.current !== generation) return
+          const label = getVideoProgressLabel(task.status, task.progress)
+          onMessageUpdate((prev) =>
+            updateAssistantMessageByKey(prev, messageKey, (message) => ({
+              ...updateCurrentVersionContent(
+                message,
+                `${t(ERROR_MESSAGES.VIDEO_GENERATING)} (${label})`
+              ),
+              status: MESSAGE_STATUS.STREAMING,
+              videoTaskId: taskId,
+              videoUrl: null,
+            }))
+          )
+        },
+      })
+
+      if (signal.aborted || requestGenerationRef.current !== generation) {
+        return
+      }
+
+      if (isVideoTaskFailed(finalTask.status)) {
+        handleStreamError(
+          generation,
+          finalTask.error?.message || ERROR_MESSAGES.VIDEO_FAILED,
+          finalTask.error?.code
+        )
+        return
+      }
+
+      const videoUrl = resolveVideoPlaybackUrl(finalTask, taskId)
+      onMessageUpdate((prev) => {
+        if (requestGenerationRef.current !== generation) return prev
+        return updateAssistantMessageByKey(prev, messageKey, (message) =>
+          completeAssistantMessage({
+            ...updateCurrentVersionContent(message, ''),
+            videoUrl,
+            videoTaskId: taskId,
+          })
+        )
+      })
+    },
+    [handleStreamError, onMessageUpdate, t]
+  )
+
+  // Resume incomplete video generations restored from localStorage.
+  const resumeIncompleteVideoTasks = useCallback(() => {
+    const incomplete = [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.from === MESSAGE_ROLES.ASSISTANT &&
+          Boolean(message.videoTaskId) &&
+          !message.videoUrl
+      )
+
+    if (!incomplete?.videoTaskId) {
+      return
+    }
+
+    const generation = requestGenerationRef.current + 1
+    const abortController = new AbortController()
+    const taskId = incomplete.videoTaskId
+    const messageKey = incomplete.key
+
+    requestGenerationRef.current = generation
+    stopStream()
+    discardPendingStreamUpdates(generation)
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = abortController
+
+    void (async () => {
+      try {
+        setIsRequesting(true)
+        onMessageUpdate((prev) =>
+          updateAssistantMessageByKey(prev, messageKey, (message) => ({
+            ...message,
+            status: MESSAGE_STATUS.STREAMING,
+            videoUrl: null,
+            videoTaskId: taskId,
+          }))
+        )
+        await pollVideoTaskForMessage(
+          generation,
+          messageKey,
+          taskId,
+          abortController.signal
+        )
+      } catch (error: unknown) {
+        if (
+          abortController.signal.aborted ||
+          requestGenerationRef.current !== generation
+        ) {
+          return
+        }
+
+        if (
+          error instanceof Error &&
+          error.message === 'Video generation timed out'
+        ) {
+          handleStreamError(generation, ERROR_MESSAGES.VIDEO_TIMEOUT)
+          return
+        }
+
+        const { errorCode, errorMessage } = parseRequestErrorDetails(error)
+        handleStreamError(generation, errorMessage, errorCode)
+      } finally {
+        if (requestGenerationRef.current === generation) {
+          abortControllerRef.current = null
+          setIsRequesting(false)
+        }
+      }
+    })()
+  }, [
+    messages,
+    stopStream,
+    discardPendingStreamUpdates,
+    onMessageUpdate,
+    pollVideoTaskForMessage,
+    handleStreamError,
+  ])
+
+  useEffect(() => {
+    if (isLoadingMessages || didResumeVideoTasksRef.current) {
+      return
+    }
+    didResumeVideoTasksRef.current = true
+    resumeIncompleteVideoTasks()
+  }, [isLoadingMessages, resumeIncompleteVideoTasks])
+
+  // Send video generation request for Seedance models
+  const sendVideoGenerationChat = useCallback(
+    async (messagesForSend: Message[]) => {
+      const generation = requestGenerationRef.current + 1
+      const abortController = new AbortController()
+
+      requestGenerationRef.current = generation
+      stopStream()
+      discardPendingStreamUpdates(generation)
+      abortControllerRef.current?.abort()
+      abortControllerRef.current = abortController
+
+      const lastUserMessage = [...messagesForSend]
+        .reverse()
+        .find((message) => message.from === 'user')
+      const prompt = lastUserMessage
+        ? getMessageContent(lastUserMessage).trim()
+        : ''
+
+      if (!prompt) {
+        handleStreamError(generation, ERROR_MESSAGES.VIDEO_PROMPT_REQUIRED)
+        return
+      }
+
+      const assistantMessage = [...messagesForSend]
+        .reverse()
+        .find((message) => message.from === MESSAGE_ROLES.ASSISTANT)
+      const messageKey = assistantMessage?.key
+      if (!messageKey) {
+        handleStreamError(generation, ERROR_MESSAGES.API_REQUEST_ERROR)
+        return
+      }
+
+      try {
+        setIsRequesting(true)
+        onMessageUpdate((prev) => {
+          if (requestGenerationRef.current !== generation) return prev
+          return updateAssistantMessageByKey(prev, messageKey, (message) => ({
+            ...updateCurrentVersionContent(
+              message,
+              t(ERROR_MESSAGES.VIDEO_GENERATING)
+            ),
+            status: MESSAGE_STATUS.STREAMING,
+            videoUrl: null,
+            videoTaskId: null,
+          }))
+        })
+
+        const created = await createVideoGeneration(
+          {
+            model: config.model,
+            prompt,
+            group: config.group,
+            duration: 5,
+            size: '720p',
+          },
+          abortController.signal
+        )
+
+        if (
+          abortController.signal.aborted ||
+          requestGenerationRef.current !== generation
+        ) {
+          return
+        }
+
+        const taskId = created.id || created.task_id
+        if (!taskId) {
+          handleStreamError(generation, ERROR_MESSAGES.API_REQUEST_ERROR)
+          return
+        }
+
+        onMessageUpdate((prev) => {
+          if (requestGenerationRef.current !== generation) return prev
+          return updateAssistantMessageByKey(prev, messageKey, (message) => ({
+            ...message,
+            videoTaskId: taskId,
+          }))
+        })
+
+        await pollVideoTaskForMessage(
+          generation,
+          messageKey,
+          taskId,
+          abortController.signal
+        )
+      } catch (error: unknown) {
+        if (
+          abortController.signal.aborted ||
+          requestGenerationRef.current !== generation
+        ) {
+          return
+        }
+
+        if (
+          error instanceof Error &&
+          error.message === 'Video generation timed out'
+        ) {
+          handleStreamError(generation, ERROR_MESSAGES.VIDEO_TIMEOUT)
+          return
+        }
+
+        const { errorCode, errorMessage } = parseRequestErrorDetails(error)
+        handleStreamError(generation, errorMessage, errorCode)
+      } finally {
+        if (requestGenerationRef.current === generation) {
+          abortControllerRef.current = null
+          setIsRequesting(false)
+        }
+      }
+    },
+    [
+      config.model,
+      config.group,
+      stopStream,
+      discardPendingStreamUpdates,
+      onMessageUpdate,
+      handleStreamError,
+      pollVideoTaskForMessage,
+      t,
+    ]
+  )
+
   // Send chat request (stream or non-stream based on config)
   const sendChat = useCallback(
     (messages: Message[]) => {
+      if (isSeedanceModel(config.model)) {
+        void sendVideoGenerationChat(messages)
+        return
+      }
       if (config.stream) {
         sendStreamingChat(messages)
       } else {
         sendNonStreamingChat(messages)
       }
     },
-    [config.stream, sendStreamingChat, sendNonStreamingChat]
+    [
+      config.stream,
+      config.model,
+      sendStreamingChat,
+      sendNonStreamingChat,
+      sendVideoGenerationChat,
+    ]
   )
 
   // Stop generation

@@ -225,6 +225,17 @@ function normalizeStoredMessageForLoad(message: Message): Message {
 
   const normalized = changed ? { ...message, versions, reasoning } : message
 
+  // Incomplete video generations must stay pending so Playground can resume polling.
+  if (normalized.videoTaskId && !normalized.videoUrl) {
+    return {
+      ...normalized,
+      status: MESSAGE_STATUS.STREAMING,
+      isContentComplete: false,
+      completedAt: undefined,
+      durationMs: undefined,
+    }
+  }
+
   if (!isAssistantMessagePending(normalized)) {
     return normalized
   }
